@@ -35,8 +35,9 @@ export function unpriceGate(budget: BudgetHandle, sleep: Sleep): Gate {
         if (!(error instanceof BudgetExceededError)) throw error
         emit({ type: "denied", agent: spec.agent, remedy: error.blocked.remedy })
         if (error.blocked.remedy !== "release_holds") return "stop"
-        // Open holds settle within a call's latency, so headroom comes back shortly.
-        await sleep(150 + Math.random() * 150)
+        // Open holds settle within a call's latency, so headroom comes back shortly. Each retry is a
+        // request to the hosted API and a Worker caps subrequests per invocation, so back off further.
+        await sleep(400 + Math.random() * 400)
         return "retry"
       }
     },

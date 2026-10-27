@@ -31,6 +31,7 @@ describe("panelReducer", () => {
       { t: 30, type: "finished", agent: 0, actual: micros(70), reserved: micros(60) },
       { t: 40, type: "started", agent: 0, reserved: micros(60) },
       { t: 50, type: "finished", agent: 1, actual: micros(40), reserved: micros(60) },
+      { t: 55, type: "decided", agent: 1, ms: 42, allowed: false },
       { t: 60, type: "denied", agent: 1, remedy: "release_holds" },
       { t: 70, type: "stopped", agent: 1 },
     ]
@@ -45,6 +46,7 @@ describe("panelReducer", () => {
       denied: 1,
       alert: { t: 50, spent: 110, inFlight: 1 },
       firstDenial: { t: 60, spent: 110, held: 60 },
+      decisions: [{ ms: 42, allowed: false }],
       series: [
         { t: 0, spent: 0, held: 0 },
         { t: 10, spent: 0, held: 60 },

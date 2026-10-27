@@ -11,11 +11,12 @@ const isIntIn = (n: unknown, min: number, max: number): n is number =>
 
 function parseRunRequest(body: unknown): RunRequest | null {
   if (typeof body !== "object" || body === null) return null
-  const { budget, agents, variance, seed } = body as Record<string, unknown>
+  const { budget, agents, variance, seed, mode } = body as Record<string, unknown>
   if (typeof budget !== "number" || !isIntIn(budget * 2, 2, 40)) return null
   if (!isIntIn(agents, 1, 50) || !isIntIn(seed, 0, 0xffff_ffff)) return null
   if (variance !== "low" && variance !== "med" && variance !== "high") return null
-  return { budget, agents, variance, seed }
+  if (mode !== "remote" && mode !== "local") return null
+  return { budget, agents, variance, seed, mode }
 }
 
 function abortableSleep(signal: AbortSignal): Sleep {
@@ -49,19 +50,46 @@ function streamRun(run: RunRequest, env: Env, clientGone: AbortSignal): Response
   const sleep = abortableSleep(signal)
   const panel = (side: Side, gate: Gate) =>
     runPanel({ ...run, gate, sleep, signal, emit: (event) => send({ panel: side, ...event }) })
-  // Async so a missing token fails the right panel, not the request, and the left still runs.
+  // Creates the budget, and in local mode takes the lease, before either panel starts: a service keeps
+  // both warm across requests, so the race times reserves rather than this one-off setup.
+  const ready = (async () => {
+    const opened = performance.now()
+    const unprice = new Unprice({ token: env.UNPRICE_TOKEN })
+    const key = `demo:run:${crypto.randomUUID()}`
+    const ifMissing = {
+      unit: "USD",
+      limits: [{ amount: String(run.budget), window: "never" as const }],
+      closesAt: Date.now() + 10 * 60_000,
+    }
+    const local =
+      run.mode === "local" ? unprice.budget(key, { mode: "local", lease: { amount: String(run.budget) }, ifMissing }) : null
+    const budget = local ?? unprice.budget(key, { ifMissing })
+    const warm = await budget.authorize({ amount: "0.000001", idempotencyKey: crypto.randomUUID() })
+    if (warm.error) throw new Error(`Unprice refused the run's budget: ${warm.error.message}`)
+    if (warm.result.allowed) await warm.result.hold.release()
+    send({ type: "ready", ms: performance.now() - opened })
+    const close = async () => {
+      const closed = await local?.close()
+      if (closed?.error) throw new Error(`The lease did not report back: ${closed.error.message}`)
+    }
+    return { budget, close }
+  })()
+
+  const left = async () => {
+    await ready.catch(() => {})
+    await panel("left", afterTheFactGate(micros(run.budget * 1e6)))
+  }
+  // A failed setup fails the right panel, not the request, so the left still runs.
   const right = async () => {
-    const budget = new Unprice({ token: env.UNPRICE_TOKEN }).budget(`demo:run:${crypto.randomUUID()}`, {
-      ifMissing: {
-        unit: "USD",
-        limits: [{ amount: String(run.budget), window: "never" }],
-        closesAt: Date.now() + 10 * 60_000,
-      },
-    })
-    await panel("right", unpriceGate(budget, sleep))
+    const { budget, close } = await ready
+    try {
+      await panel("right", unpriceGate(budget, sleep))
+    } finally {
+      await close()
+    }
   }
 
-  const panels = [panel("left", afterTheFactGate(micros(run.budget * 1e6))), right()]
+  const panels = [left(), right()]
   void Promise.allSettled(panels).then((outcomes) => {
     const failed = outcomes.find((outcome) => outcome.status === "rejected")
     if (!failed) return finish({ type: "end" })
@@ -86,7 +114,8 @@ async function createRun(req: Request, env: Env): Promise<Response> {
     return Response.json(
       {
         error: "bad_request",
-        message: "Send { budget: 1-20 in 0.5 steps, agents: 1-50, variance: low | med | high, seed: uint32 }.",
+        message:
+          "Send { budget: 1-20 in 0.5 steps, agents: 1-50, variance: low | med | high, seed: uint32, mode: remote | local }.",
       },
       { status: 400 },
     )

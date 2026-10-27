@@ -1,10 +1,12 @@
+import "@fontsource-variable/geist"
+import "@fontsource-variable/geist-mono"
 import { type PanelState, initialPanel, panelReducer } from "../shared/engine"
 import { type Micros, micros, toUsd } from "../shared/money"
-import { type RunEvent, type RunRequest, readRunEvents } from "../shared/run"
+import { type Mode, type RunEvent, type RunRequest, readRunEvents } from "../shared/run"
 import type { Variance } from "../shared/sim"
 import { type ChartKind, type ChartScale, drawChart, timeAtPointer, valueAt } from "./chart"
 
-type Settings = { cap: Micros; agents: number; variance: Variance }
+type Settings = { cap: Micros; agents: number; variance: Variance; mode: Mode }
 
 type Run = Settings & {
   seed: number
@@ -12,6 +14,8 @@ type Run = Settings & {
   left: PanelState
   right: PanelState
   controller: AbortController
+  /** How long creating the budget, and in local mode taking the lease, took before the race. */
+  readyMs: number | null
 }
 
 type Phase =
@@ -36,6 +40,7 @@ const controls = {
   agents: $<HTMLInputElement>("#agents"),
   agentsOut: $<HTMLOutputElement>("#agents-out"),
   variance: Array.from(document.querySelectorAll<HTMLInputElement>('input[name="variance"]')),
+  mode: Array.from(document.querySelectorAll<HTMLInputElement>('input[name="mode"]')),
   run: $<HTMLButtonElement>("#run"),
   seed: $<HTMLSpanElement>("#seed"),
   notice: $<HTMLParagraphElement>("#notice"),
@@ -69,7 +74,8 @@ const views = { left: panelView("left", "after"), right: panelView("right", "res
 function readSettings(): Settings {
   const checked = controls.variance.find((input) => input.checked)?.value
   const variance: Variance = checked === "low" || checked === "high" ? checked : "med"
-  return { cap: micros(Math.round(Number(controls.budget.value) * 1e6)), agents: Number(controls.agents.value), variance }
+  const mode: Mode = controls.mode.find((input) => input.checked)?.value === "local" ? "local" : "remote"
+  return { cap: micros(Math.round(Number(controls.budget.value) * 1e6)), agents: Number(controls.agents.value), variance, mode }
 }
 
 const seconds = (t: number) => `${(t / 1000).toFixed(1)}s`
@@ -97,16 +103,48 @@ function leftLog(state: PanelState, finished: boolean): LogLine[] {
   return lines
 }
 
-function rightLog(state: PanelState, finished: boolean): LogLine[] {
+const percentile = (values: readonly number[], p: number) => {
+  const sorted = [...values].sort((a, b) => a - b)
+  return sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] ?? 0
+}
+
+const ms = (value: number) => (value < 1 ? "under 1 ms" : `${Math.round(value)} ms`)
+
+function rightLog(state: PanelState, finished: boolean, mode: Mode, readyMs: number | null): LogLine[] {
   const lines: LogLine[] = []
+  const denial = mode === "remote" ? "402" : "denial"
+  const deniedBy = mode === "remote" ? "denied (402)" : "denied by the lease"
   if (finished) {
     const over = state.spent > state.cap
     lines.push({ t: null, text: `spent ${toUsd(state.spent)}, ${over ? "over cap" : "never over cap"}`, over })
   }
-  if (state.denied > 0) lines.push({ t: null, text: `${state.denied} ${state.denied === 1 ? "call" : "calls"} denied (402)` })
+  const allowed = state.decisions.filter((d) => d.allowed).map((d) => d.ms)
+  const denied = state.decisions.filter((d) => !d.allowed).map((d) => d.ms)
+  if (allowed.length > 0) {
+    const where = mode === "remote" ? "the Unprice API" : "the local lease"
+    lines.push({
+      t: null,
+      text: `reserve before each call: ${ms(percentile(allowed, 0.5))} p50, ${ms(percentile(allowed, 0.95))} p95, from ${where}`,
+    })
+  }
+  if (state.denied > 0) {
+    const asked = mode === "local" ? ", asking the API for more room" : ""
+    lines.push({
+      t: null,
+      text: `${state.denied} ${state.denied === 1 ? "call" : "calls"} ${deniedBy} in ${ms(percentile(denied, 0.5))} p50${asked}; none ran`,
+    })
+  }
   if (state.firstDenial) {
     const { t, spent, held } = state.firstDenial
-    lines.push({ t, text: `first 402 at ${toUsd(spent)} spent, ${toUsd(held)} reserved` })
+    const left = micros(Math.max(0, state.cap - spent - held))
+    lines.push({
+      t,
+      text: `first ${denial}: ${toUsd(spent)} spent, ${toUsd(held)} held by running calls, ${toUsd(left)} left for the next one`,
+    })
+  }
+  if (readyMs !== null) {
+    const setup = mode === "remote" ? "budget created" : `budget created and a ${toUsd(state.cap)} lease taken`
+    lines.push({ t: null, text: `${setup} in ${ms(readyMs)}, before the race` })
   }
   return lines
 }
@@ -172,11 +210,12 @@ function emptyRun(settings: Settings): Pick<Run, "left" | "right"> {
 
 function render(): void {
   const settings = readSettings()
+  document.body.dataset.phase = phase.kind
   controls.budgetOut.textContent = toUsd(settings.cap)
   controls.agentsOut.textContent = String(settings.agents)
 
   const busy = phase.kind === "running" || phase.kind === "starting"
-  for (const input of [controls.budget, controls.agents, ...controls.variance]) input.disabled = busy
+  for (const input of [controls.budget, controls.agents, ...controls.variance, ...controls.mode]) input.disabled = busy
   controls.run.textContent = phase.kind === "starting" ? "Starting" : busy ? "Stop" : phase.kind === "idle" || (phase.kind === "failed" && !phase.run) ? "Run" : "Run again"
   controls.run.dataset.mode = busy ? "stop" : "run"
 
@@ -202,9 +241,10 @@ function render(): void {
 
   const finished = phase.kind === "finished"
   const stopped = phase.kind === "finished" && phase.stopped
+  const mode = run?.mode ?? settings.mode
   for (const [view, state, log] of [
     [views.left, panels.left, leftLog],
-    [views.right, panels.right, rightLog],
+    [views.right, panels.right, (state: PanelState, done: boolean) => rightLog(state, done, mode, run?.readyMs ?? null)],
   ] as const) {
     renderCounter(view, state)
     drawChart(view.canvas, state, view.kind, scale, endT, hoverT)
@@ -239,6 +279,7 @@ async function start(): Promise<void> {
     agents: settings.agents,
     variance: settings.variance,
     seed: crypto.getRandomValues(new Uint32Array(1))[0]!,
+    mode: settings.mode,
   }
   phase = { kind: "starting", settings }
   render()
@@ -255,7 +296,7 @@ async function start(): Promise<void> {
     return render()
   }
 
-  const run: Run = { ...settings, seed: request.seed, startedAt: performance.now(), ...emptyRun(settings), controller }
+  const run: Run = { ...settings, seed: request.seed, startedAt: performance.now(), ...emptyRun(settings), controller, readyMs: null }
   phase = { kind: "running", run }
   scheduleRender()
 
@@ -263,7 +304,10 @@ async function start(): Promise<void> {
   try {
     for await (const event of readRunEvents(response.body)) {
       if ("panel" in event) run[event.panel] = panelReducer(run[event.panel], event)
-      else last = event
+      else if (event.type === "ready") {
+        run.readyMs = event.ms
+        run.startedAt = performance.now()
+      } else last = event
     }
   } catch {
     // Stop aborts the fetch, which rejects the read; anything else dropped the connection.
@@ -282,7 +326,7 @@ controls.run.addEventListener("click", () => {
   void start()
 })
 
-for (const input of [controls.budget, controls.agents, ...controls.variance]) {
+for (const input of [controls.budget, controls.agents, ...controls.variance, ...controls.mode]) {
   input.addEventListener("input", () => {
     if (phase.kind !== "running") render()
   })
@@ -306,3 +350,6 @@ window.addEventListener("resize", () => {
 })
 
 render()
+void document.fonts.ready.then(() => {
+  if (phase.kind !== "running") render()
+})

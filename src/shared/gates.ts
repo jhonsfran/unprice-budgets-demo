@@ -22,8 +22,11 @@ export function afterTheFactGate(cap: Micros): Gate {
 export function unpriceGate(budget: BudgetHandle, sleep: Sleep): Gate {
   return {
     async run(spec, work, emit) {
+      const asked = performance.now()
+      const decided = (allowed: boolean) => emit({ type: "decided", agent: spec.agent, ms: performance.now() - asked, allowed })
       try {
         await budget.spend({ estimate: toDecimal(spec.estimate) }, async () => {
+          decided(true)
           emit({ type: "started", agent: spec.agent, reserved: spec.estimate })
           await work()
           // Emitted before the settle request so the panel never shows a hold the server already returned.
@@ -33,6 +36,7 @@ export function unpriceGate(budget: BudgetHandle, sleep: Sleep): Gate {
         return "continue"
       } catch (error) {
         if (!(error instanceof BudgetExceededError)) throw error
+        decided(false)
         emit({ type: "denied", agent: spec.agent, remedy: error.blocked.remedy })
         if (error.blocked.remedy !== "release_holds") return "stop"
         // Open holds settle within a call's latency, so headroom comes back shortly. Each retry is a

@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": [],
+    "outDir": "node_modules/.tsbuild/worker"
+  },
+  "include": ["worker-configuration.d.ts", "src/worker", "src/shared"]
+}

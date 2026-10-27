@@ -1,0 +1,26 @@
+{
+  "name": "unprice-budgets-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "wrangler types && tsc -b",
+    "test": "vitest run",
+    "verify": "tsx scripts/verify.ts",
+    "deploy": "vite build && wrangler deploy"
+  },
+  "dependencies": {
+    "@unprice/budgets": "0.2.0"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "1.65.0",
+    "@types/node": "^22.20.5",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vite": "8.3.5",
+    "vitest": "5.0.5",
+    "wrangler": "4.154.0"
+  }
+}

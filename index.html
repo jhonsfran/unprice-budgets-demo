@@ -96,10 +96,9 @@ await budget.spend({ estimate: maxCost(call) }, async () =&gt; {
 
       <footer>
         <p>
-          No LLM calls are made. Call costs are simulated at $3 per million input tokens and $15 per million output tokens, with a
-          4,096-token output ceiling for each reservation. The right panel runs the real <code>@unprice/budgets</code> client
-          against a Durable Object in this demo that implements the budgets authorize, settle, and release contract. It does not
-          call the hosted Unprice API.
+          The right panel runs the real <code>@unprice/budgets</code> client in this demo's Cloudflare Worker against the hosted
+          Unprice API, on a fresh budget for every run. No LLM calls are made. Call costs are simulated at $3 per million input
+          tokens and $15 per million output tokens, with a 4,096-token output ceiling for each reservation.
         </p>
       </footer>
     </main>

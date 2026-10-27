@@ -1,7 +1,6 @@
-import { Unprice } from "@unprice/budgets"
-import { type PanelEvent, type PanelState, type Sleep, initialPanel, panelReducer, runPanel } from "../shared/engine"
-import { afterTheFactGate, unpriceGate } from "../shared/gates"
-import { type Micros, micros, toDecimal, toUsd } from "../shared/money"
+import { type PanelState, initialPanel, panelReducer } from "../shared/engine"
+import { type Micros, micros, toUsd } from "../shared/money"
+import { type RunEvent, type RunRequest, readRunEvents } from "../shared/run"
 import type { Variance } from "../shared/sim"
 import { type ChartKind, type ChartScale, drawChart, timeAtPointer, valueAt } from "./chart"
 
@@ -226,69 +225,53 @@ function scheduleRender(): void {
   })
 }
 
-function abortableSleep(signal: AbortSignal): Sleep {
-  return (ms) =>
-    new Promise((resolve) => {
-      if (signal.aborted) return resolve()
-      const id = setTimeout(resolve, ms)
-      signal.addEventListener("abort", () => (clearTimeout(id), resolve()), { once: true })
-    })
-}
-
-async function createRun(): Promise<{ token: string } | { error: string }> {
-  const response = await fetch("/api/runs", { method: "POST" })
+async function failureMessage(response: Response): Promise<string> {
   const body: unknown = await response.json().catch(() => null)
-  const record = typeof body === "object" && body !== null ? body : {}
-  const token = "token" in record ? record.token : undefined
-  if (response.ok && typeof token === "string") return { token }
-  const message = "message" in record ? record.message : undefined
-  return { error: typeof message === "string" ? message : `Could not start a run (HTTP ${response.status}).` }
+  const message = typeof body === "object" && body !== null && "message" in body ? body.message : undefined
+  return typeof message === "string" ? message : `Could not start a run (HTTP ${response.status}).`
 }
 
 async function start(): Promise<void> {
   const settings = readSettings()
+  const controller = new AbortController()
+  const request: RunRequest = {
+    budget: settings.cap / 1e6,
+    agents: settings.agents,
+    variance: settings.variance,
+    seed: crypto.getRandomValues(new Uint32Array(1))[0]!,
+  }
   phase = { kind: "starting", settings }
   render()
 
-  const created = await createRun().catch(() => ({ error: "Could not reach the demo server." }))
-  if ("error" in created) {
-    phase = { kind: "failed", run: null, message: created.error }
+  const response = await fetch("/api/runs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+    signal: controller.signal,
+  }).catch(() => null)
+  if (!response?.ok || !response.body) {
+    const message = response ? await failureMessage(response) : "Could not reach the demo server."
+    phase = { kind: "failed", run: null, message }
     return render()
   }
 
-  const unprice = new Unprice({ token: created.token, baseUrl: `${location.origin}/unprice`, disableTelemetry: true })
-  const key = `run:${created.token}`
-  const upserted = await unprice.budgets.upsert({ key, unit: "USD", limits: [{ amount: toDecimal(settings.cap), window: "never" }] })
-  if (upserted.error) {
-    phase = { kind: "failed", run: null, message: upserted.error.message }
-    return render()
-  }
-
-  const controller = new AbortController()
-  const run: Run = {
-    ...settings,
-    seed: crypto.getRandomValues(new Uint32Array(1))[0]!,
-    startedAt: performance.now(),
-    ...emptyRun(settings),
-    controller,
-  }
+  const run: Run = { ...settings, seed: request.seed, startedAt: performance.now(), ...emptyRun(settings), controller }
   phase = { kind: "running", run }
   scheduleRender()
 
-  const sleep = abortableSleep(controller.signal)
-  const common = { seed: run.seed, agents: settings.agents, variance: settings.variance, sleep, signal: controller.signal }
-  const into = (side: "left" | "right") => (event: PanelEvent) => {
-    run[side] = panelReducer(run[side], event)
-  }
+  let last: RunEvent | null = null
   try {
-    await Promise.all([
-      runPanel({ ...common, gate: afterTheFactGate(settings.cap), emit: into("left") }),
-      runPanel({ ...common, gate: unpriceGate(unprice.budget(key), sleep), emit: into("right") }),
-    ])
+    for await (const event of readRunEvents(response.body)) {
+      if ("panel" in event) run[event.panel] = panelReducer(run[event.panel], event)
+      else last = event
+    }
+  } catch {
+    // Stop aborts the fetch, which rejects the read; anything else dropped the connection.
+  }
+  if (last?.type === "end" || controller.signal.aborted) {
     phase = { kind: "finished", run, endedAt: performance.now(), stopped: controller.signal.aborted }
-  } catch (error) {
-    controller.abort()
-    phase = { kind: "failed", run, message: error instanceof Error ? error.message : "The run failed." }
+  } else {
+    phase = { kind: "failed", run, message: last?.message ?? "The connection to the demo server dropped." }
   }
   render()
 }

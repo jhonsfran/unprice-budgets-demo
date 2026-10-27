@@ -9,13 +9,10 @@ import { type ChartKind, type ChartScale, drawChart, timeAtPointer, valueAt } fr
 type Settings = { cap: Micros; agents: number; variance: Variance; mode: Mode }
 
 type Run = Settings & {
-  seed: number
   startedAt: number
   left: PanelState
   right: PanelState
   controller: AbortController
-  /** How long creating the budget, and in local mode taking the lease, took before the race. */
-  readyMs: number | null
 }
 
 type Phase =
@@ -42,7 +39,6 @@ const controls = {
   variance: Array.from(document.querySelectorAll<HTMLInputElement>('input[name="variance"]')),
   mode: Array.from(document.querySelectorAll<HTMLInputElement>('input[name="mode"]')),
   run: $<HTMLButtonElement>("#run"),
-  seed: $<HTMLSpanElement>("#seed"),
   notice: $<HTMLParagraphElement>("#notice"),
 }
 
@@ -74,11 +70,16 @@ const views = { left: panelView("left", "after"), right: panelView("right", "res
 function readSettings(): Settings {
   const checked = controls.variance.find((input) => input.checked)?.value
   const variance: Variance = checked === "low" || checked === "high" ? checked : "med"
-  const mode: Mode = controls.mode.find((input) => input.checked)?.value === "local" ? "local" : "remote"
+  const mode: Mode = controls.mode.find((input) => input.checked)?.value === "remote" ? "remote" : "local"
   return { cap: micros(Math.round(Number(controls.budget.value) * 1e6)), agents: Number(controls.agents.value), variance, mode }
 }
 
 const seconds = (t: number) => `${(t / 1000).toFixed(1)}s`
+
+/** "$5" rather than "$5.00" for a whole-dollar cap, as people say it. */
+const capUsd = (cap: Micros) => toUsd(cap).replace(/\.00$/, "")
+
+const calls = (n: number) => `${n} ${n === 1 ? "call" : "calls"}`
 
 type LogLine = { t: number | null; text: string; over?: boolean }
 
@@ -90,7 +91,7 @@ function leftLog(state: PanelState, finished: boolean): LogLine[] {
       over > 0
         ? {
             t: null,
-            text: `spent ${toUsd(state.spent)}, ${toUsd(micros(over))} over cap (+${Math.round((over / state.cap) * 100)}%)`,
+            text: `spent ${toUsd(state.spent)}, ${toUsd(micros(over))} over the cap (+${Math.round((over / state.cap) * 100)}%)`,
             over: true,
           }
         : { t: null, text: `spent ${toUsd(state.spent)}, under the cap` },
@@ -98,40 +99,25 @@ function leftLog(state: PanelState, finished: boolean): LogLine[] {
   }
   if (state.alert) {
     const { t, spent, inFlight } = state.alert
-    lines.push({ t, text: `alert fired at ${toUsd(spent)}, ${inFlight} ${inFlight === 1 ? "call" : "calls"} in flight` })
+    const after =
+      inFlight > 0
+        ? `but ${calls(inFlight)} already running kept spending past it`
+        : "with nothing else running"
+    lines.push({ t, text: `spend reached the cap at ${toUsd(spent)} and the alert fired, ${after}` })
   }
   return lines
 }
 
-const percentile = (values: readonly number[], p: number) => {
-  const sorted = [...values].sort((a, b) => a - b)
-  return sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] ?? 0
-}
-
-const ms = (value: number) => (value < 1 ? "under 1 ms" : `${Math.round(value)} ms`)
-
-function rightLog(state: PanelState, finished: boolean, mode: Mode, readyMs: number | null): LogLine[] {
+function rightLog(state: PanelState, finished: boolean): LogLine[] {
   const lines: LogLine[] = []
-  const denial = mode === "remote" ? "402" : "denial"
-  const deniedBy = mode === "remote" ? "denied (402)" : "denied by the lease"
   if (finished) {
     const over = state.spent > state.cap
-    lines.push({ t: null, text: `spent ${toUsd(state.spent)}, ${over ? "over cap" : "never over cap"}`, over })
-  }
-  const allowed = state.decisions.filter((d) => d.allowed).map((d) => d.ms)
-  const denied = state.decisions.filter((d) => !d.allowed).map((d) => d.ms)
-  if (allowed.length > 0) {
-    const where = mode === "remote" ? "the Unprice API" : "the local lease"
-    lines.push({
-      t: null,
-      text: `reserve before each call: ${ms(percentile(allowed, 0.5))} p50, ${ms(percentile(allowed, 0.95))} p95, from ${where}`,
-    })
+    lines.push({ t: null, text: `spent ${toUsd(state.spent)}, ${over ? "over the cap" : "never over the cap"}`, over })
   }
   if (state.denied > 0) {
-    const asked = mode === "local" ? ", asking the API for more room" : ""
     lines.push({
       t: null,
-      text: `${state.denied} ${state.denied === 1 ? "call" : "calls"} ${deniedBy} in ${ms(percentile(denied, 0.5))} p50${asked}; none ran`,
+      text: `${calls(state.denied)} turned away before starting, because their worst case no longer fit; none ran or cost anything`,
     })
   }
   if (state.firstDenial) {
@@ -139,12 +125,8 @@ function rightLog(state: PanelState, finished: boolean, mode: Mode, readyMs: num
     const left = micros(Math.max(0, state.cap - spent - held))
     lines.push({
       t,
-      text: `first ${denial}: ${toUsd(spent)} spent, ${toUsd(held)} held by running calls, ${toUsd(left)} left for the next one`,
+      text: `first call turned away: ${toUsd(spent)} spent plus ${toUsd(held)} set aside for running calls left only ${toUsd(left)}`,
     })
-  }
-  if (readyMs !== null) {
-    const setup = mode === "remote" ? "budget created" : `budget created and a ${toUsd(state.cap)} lease taken`
-    lines.push({ t: null, text: `${setup} in ${ms(readyMs)}, before the race` })
   }
   return lines
 }
@@ -164,10 +146,20 @@ function renderLog(list: HTMLOListElement, lines: LogLine[]): void {
   list.replaceChildren(...items)
 }
 
-function renderCounter(view: PanelView, state: PanelState): void {
+function renderCounter(view: PanelView, state: PanelState, settled: boolean): void {
+  const over = state.spent - state.cap
+  // Once the reserving panel has turned calls away and stayed under, lead with the outcome, not the number.
+  const held = settled && view.kind === "reserve" && state.denied > 0 && over <= 0
+  view.amount.toggleAttribute("data-verdict", held)
+  if (held) {
+    view.amount.textContent = `Stopped at the ${capUsd(state.cap)} cap`
+    view.of.textContent = `${toUsd(state.spent)} spent`
+    view.delta.textContent = "never over"
+    view.delta.dataset.tone = "under"
+    return
+  }
   view.amount.textContent = toUsd(state.spent)
   view.of.textContent = `of ${toUsd(state.cap)} cap`
-  const over = state.spent - state.cap
   if (over > 0) {
     view.delta.textContent = `+${toUsd(micros(over))} over`
     view.delta.dataset.tone = "over"
@@ -220,7 +212,6 @@ function render(): void {
   controls.run.dataset.mode = busy ? "stop" : "run"
 
   const run = "run" in phase ? phase.run : null
-  controls.seed.textContent = run ? `seed ${run.seed}` : ""
   controls.notice.hidden = phase.kind !== "failed"
   if (phase.kind === "failed") controls.notice.textContent = phase.message
 
@@ -241,12 +232,11 @@ function render(): void {
 
   const finished = phase.kind === "finished"
   const stopped = phase.kind === "finished" && phase.stopped
-  const mode = run?.mode ?? settings.mode
   for (const [view, state, log] of [
     [views.left, panels.left, leftLog],
-    [views.right, panels.right, (state: PanelState, done: boolean) => rightLog(state, done, mode, run?.readyMs ?? null)],
+    [views.right, panels.right, rightLog],
   ] as const) {
-    renderCounter(view, state)
+    renderCounter(view, state, finished && !stopped)
     drawChart(view.canvas, state, view.kind, scale, endT, hoverT)
     renderTooltip(view, state, scale)
     const lines = log(state, finished)
@@ -296,7 +286,7 @@ async function start(): Promise<void> {
     return render()
   }
 
-  const run: Run = { ...settings, seed: request.seed, startedAt: performance.now(), ...emptyRun(settings), controller, readyMs: null }
+  const run: Run = { ...settings, startedAt: performance.now(), ...emptyRun(settings), controller }
   phase = { kind: "running", run }
   scheduleRender()
 
@@ -304,10 +294,8 @@ async function start(): Promise<void> {
   try {
     for await (const event of readRunEvents(response.body)) {
       if ("panel" in event) run[event.panel] = panelReducer(run[event.panel], event)
-      else if (event.type === "ready") {
-        run.readyMs = event.ms
-        run.startedAt = performance.now()
-      } else last = event
+      else if (event.type === "ready") run.startedAt = performance.now()
+      else last = event
     }
   } catch {
     // Stop aborts the fetch, which rejects the read; anything else dropped the connection.
@@ -353,3 +341,10 @@ render()
 void document.fonts.ready.then(() => {
   if (phase.kind !== "running") render()
 })
+
+// Run once on load so the race is already playing; a tab opened in the background waits until it is shown.
+const autoRun = () => {
+  if (phase.kind === "idle") void start()
+}
+if (document.visibilityState === "visible") autoRun()
+else document.addEventListener("visibilitychange", autoRun, { once: true })

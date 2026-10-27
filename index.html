@@ -1,2 +1,107 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Unprice budgets</title><script type="module" src="/src/client/main.ts"></script></head><body></body></html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Unprice budgets demo</title>
+    <meta name="description" content="Two caps, the same runaway agents: one checks spend after each call, one reserves before it." />
+    <link rel="stylesheet" href="/src/client/style.css" />
+    <script type="module" src="/src/client/main.ts"></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>A cap that reserves before the call cannot be overrun.</h1>
+        <p class="lede">
+          Both panels run the same seeded swarm of runaway subagents against the same budget. The left records spend after each
+          call returns, so every call already in flight lands past the cap. The right reserves each call's worst case first, so a
+          call that does not fit never starts.
+        </p>
+      </header>
+
+      <section class="controls" aria-label="Run settings">
+        <label class="slider">
+          <span class="slider-head">Budget <output id="budget-out">$5.00</output></span>
+          <input id="budget" type="range" min="1" max="20" step="0.5" value="5" />
+        </label>
+        <label class="slider">
+          <span class="slider-head">Subagents <output id="agents-out">10</output></span>
+          <input id="agents" type="range" min="1" max="50" step="1" value="10" />
+        </label>
+        <fieldset class="segmented">
+          <legend>Cost variance</legend>
+          <div class="segments">
+            <label><input type="radio" name="variance" value="low" /><span>Low</span></label>
+            <label><input type="radio" name="variance" value="med" checked /><span>Med</span></label>
+            <label><input type="radio" name="variance" value="high" /><span>High</span></label>
+          </div>
+        </fieldset>
+        <div class="run">
+          <button id="run" type="button">Run</button>
+          <span id="seed" class="seed"></span>
+        </div>
+        <p id="notice" class="notice" role="status" hidden></p>
+      </section>
+
+      <div class="panels">
+        <section class="panel" data-panel="left" aria-labelledby="left-title">
+          <h2 id="left-title">Typical cap</h2>
+          <p class="subtitle">Checks after the call. Spend is recorded when a call returns.</p>
+          <div class="counter">
+            <span class="amount" data-amount>$0.00</span>
+            <span class="of" data-of>of $5.00 cap</span>
+            <span class="delta" data-delta></span>
+          </div>
+          <ul class="legend">
+            <li><span class="key key-spent"></span>Recorded spend</li>
+            <li><span class="key key-over"></span>Over the cap</li>
+          </ul>
+          <div class="chart">
+            <canvas data-canvas aria-label="Recorded spend over time against the cap"></canvas>
+            <div class="tooltip" data-tooltip hidden></div>
+          </div>
+          <ol class="log" data-log aria-live="polite"></ol>
+        </section>
+
+        <section class="panel" data-panel="right" aria-labelledby="right-title">
+          <h2 id="right-title">Unprice</h2>
+          <p class="subtitle">Reserves before the call. A call that does not fit gets a 402 and never runs.</p>
+          <div class="counter">
+            <span class="amount" data-amount>$0.00</span>
+            <span class="of" data-of>of $5.00 cap</span>
+            <span class="delta" data-delta></span>
+          </div>
+          <ul class="legend">
+            <li><span class="key key-spent"></span>Settled spend</li>
+            <li><span class="key key-reserved"></span>Reserved (spent + held)</li>
+          </ul>
+          <div class="chart">
+            <canvas data-canvas aria-label="Settled and reserved spend over time against the cap"></canvas>
+            <div class="tooltip" data-tooltip hidden></div>
+          </div>
+          <ol class="log" data-log aria-live="polite"></ol>
+        </section>
+      </div>
+
+      <section class="code" aria-labelledby="code-title">
+        <h2 id="code-title">The right panel, in five lines</h2>
+        <pre><code>const budget = unprice.budget(`run:${runId}`)
+await budget.spend({ estimate: maxCost(call) }, async () =&gt; {
+  const r = await llm(call) // never runs if the hold doesn't fit
+  return { value: r, actual: costOf(r.usage) }
+})</code></pre>
+        <a class="cta" href="https://app.unprice.dev">Try it on your key</a>
+      </section>
+
+      <footer>
+        <p>
+          No LLM calls are made. Call costs are simulated at $3 per million input tokens and $15 per million output tokens, with a
+          4,096-token output ceiling for each reservation. The right panel runs the real <code>@unprice/budgets</code> client
+          against a Durable Object in this demo that implements the budgets authorize, settle, and release contract. It does not
+          call the hosted Unprice API.
+        </p>
+      </footer>
+    </main>
+  </body>
+</html>

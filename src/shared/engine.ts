@@ -15,8 +15,9 @@ export type PanelEvent = GateEvent & { t: number }
 
 export type Emit = (event: GateEvent) => void
 
+/** `retry` runs the same call again, so both panels still see the identical sequence of calls. */
 export type Gate = {
-  run(spec: CallSpec, work: () => Promise<void>, emit: Emit): Promise<"continue" | "stop">
+  run(spec: CallSpec, work: () => Promise<void>, emit: Emit): Promise<"continue" | "retry" | "stop">
 }
 
 export type Sleep = (ms: number) => Promise<void>
@@ -42,9 +43,11 @@ export async function runPanel({
   const stamp: Emit = (event) => emit({ ...event, t: performance.now() - start })
 
   const agent = async (id: number) => {
-    for (let index = 0; !signal.aborted; index++) {
+    for (let index = 0; !signal.aborted; ) {
       const spec = callSpec(seed, id, index, variance)
-      if ((await gate.run(spec, () => sleep(spec.latencyMs), stamp)) === "stop") break
+      const next = await gate.run(spec, () => sleep(spec.latencyMs), stamp)
+      if (next === "stop") break
+      if (next === "continue") index++
     }
     stamp({ type: "stopped", agent: id })
   }

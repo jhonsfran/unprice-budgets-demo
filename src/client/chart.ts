@@ -5,7 +5,7 @@ export type ChartKind = "after" | "reserve"
 /** Both panels draw on one scale so their overshoot compares by eye. */
 export type ChartScale = { tMax: number; yMax: number }
 
-type Palette = Record<"surface" | "muted" | "grid" | "axis" | "spent" | "reserved" | "critical", string>
+type Palette = Record<"surface" | "ink" | "ink2" | "muted" | "rule" | "held" | "over" | "accent" | "mono", string>
 
 let palette: Palette | null = null
 
@@ -14,18 +14,20 @@ function tokens(): Palette {
   const style = getComputedStyle(document.documentElement)
   const read = (name: string) => style.getPropertyValue(`--${name}`).trim()
   palette = {
-    surface: read("surface"),
-    muted: read("muted"),
-    grid: read("grid"),
-    axis: read("axis"),
-    spent: read("spent"),
-    reserved: read("reserved"),
-    critical: read("critical"),
+    surface: read("color-paper-2"),
+    ink: read("color-ink"),
+    ink2: read("color-ink-2"),
+    muted: read("color-muted"),
+    rule: read("color-rule"),
+    held: read("color-held"),
+    over: read("color-over"),
+    accent: read("color-accent"),
+    mono: read("font-outlier"),
   }
   return palette
 }
 
-const PAD = { left: 44, right: 12, top: 14, bottom: 24 }
+const PAD = { left: 48, right: 12, top: 18, bottom: 26 }
 
 function niceStep(span: number, targetTicks: number, steps: readonly number[]): number {
   const raw = span / targetTicks
@@ -68,25 +70,33 @@ export function drawChart(
 
   const plotW = width - PAD.left - PAD.right
   const plotH = height - PAD.top - PAD.bottom
-  const x = (t: number) => PAD.left + (Math.min(t, scale.tMax) / scale.tMax) * plotW
-  const y = (micros: number) => PAD.top + plotH - (micros / scale.yMax) * plotH
+  const left = PAD.left
+  const right = PAD.left + plotW
+  const base = PAD.top + plotH
+  const dollarStep = niceStep(scale.yMax / 1e6, 4, DOLLAR_STEPS)
+  // Round the top up to a tick so an overshoot always reads against a labelled line.
+  const yTop = Math.ceil(scale.yMax / (dollarStep * 1e6)) * dollarStep * 1e6
+  const x = (t: number) => left + (Math.min(t, scale.tMax) / scale.tMax) * plotW
+  const y = (micros: number) => base - (micros / yTop) * plotH
   const crisp = (v: number) => Math.round(v) + 0.5
+  const capY = crisp(y(state.cap))
 
-  ctx.font = "11px system-ui, -apple-system, 'Segoe UI', sans-serif"
+  ctx.font = `12px ${colors.mono}`
   ctx.lineWidth = 1
 
-  const dollarStep = niceStep(scale.yMax / 1e6, 4, DOLLAR_STEPS)
   ctx.textAlign = "right"
   ctx.textBaseline = "middle"
-  for (let dollars = 0; dollars * 1e6 <= scale.yMax; dollars += dollarStep) {
+  for (let dollars = 0; dollars * 1e6 <= yTop; dollars += dollarStep) {
     const py = crisp(y(dollars * 1e6))
-    ctx.strokeStyle = dollars === 0 ? colors.axis : colors.grid
-    ctx.beginPath()
-    ctx.moveTo(PAD.left, py)
-    ctx.lineTo(PAD.left + plotW, py)
-    ctx.stroke()
+    if (dollars > 0) {
+      ctx.strokeStyle = colors.rule
+      ctx.beginPath()
+      ctx.moveTo(left, py)
+      ctx.lineTo(right, py)
+      ctx.stroke()
+    }
     ctx.fillStyle = colors.muted
-    ctx.fillText(`$${dollars % 1 === 0 ? dollars : dollars.toFixed(1)}`, PAD.left - 8, py)
+    ctx.fillText(`$${dollars % 1 === 0 ? dollars : dollars.toFixed(1)}`, left - 12, py)
   }
 
   const secondStep = niceStep(scale.tMax / 1000, 5, SECOND_STEPS)
@@ -94,7 +104,7 @@ export function drawChart(
   ctx.textBaseline = "top"
   for (let s = 0; s * 1000 <= scale.tMax; s += secondStep) {
     ctx.fillStyle = colors.muted
-    ctx.fillText(`${s}s`, x(s * 1000), PAD.top + plotH + 8)
+    ctx.fillText(`${s}s`, x(s * 1000), base + 10)
   }
 
   const series = state.series
@@ -112,7 +122,16 @@ export function drawChart(
     return path
   }
   const spentLine = stepPath((p) => p.spent)
-  const capY = y(state.cap)
+  const aboveCap = () => {
+    ctx.beginPath()
+    ctx.rect(left, 0, plotW, capY)
+    ctx.clip()
+  }
+  const belowCap = () => {
+    ctx.beginPath()
+    ctx.rect(left, capY, plotW, height - capY)
+    ctx.clip()
+  }
 
   if (kind === "after") {
     const area = stepPath((p) => p.spent)
@@ -120,11 +139,9 @@ export function drawChart(
     area.lineTo(x(series[0]!.t), y(0))
     area.closePath()
     ctx.save()
-    ctx.beginPath()
-    ctx.rect(PAD.left, PAD.top - 2, plotW, capY - PAD.top + 2)
-    ctx.clip()
-    ctx.globalAlpha = 0.3
-    ctx.fillStyle = colors.critical
+    aboveCap()
+    ctx.globalAlpha = 0.28
+    ctx.fillStyle = colors.over
     ctx.fill(area)
     ctx.restore()
   } else {
@@ -138,37 +155,70 @@ export function drawChart(
       previous = point
     }
     band.closePath()
-    ctx.globalAlpha = 0.14
-    ctx.fillStyle = colors.reserved
+    ctx.globalAlpha = 0.16
+    ctx.fillStyle = colors.held
     ctx.fill(band)
     ctx.globalAlpha = 1
+    ctx.lineWidth = 1.5
+    ctx.strokeStyle = colors.held
+    ctx.stroke(stepPath(reserved))
   }
 
-  ctx.setLineDash([4, 4])
+  // The cradle from the Unprice mark: the budget is a bracket, the cap its mouth.
+  // Where spend has passed the cap, the rim breaks open so the spill leaves through it.
+  ctx.lineWidth = 1
+  ctx.setLineDash([2, 4])
   ctx.strokeStyle = colors.muted
   ctx.beginPath()
-  ctx.moveTo(PAD.left, crisp(capY))
-  ctx.lineTo(PAD.left + plotW, crisp(capY))
+  ctx.moveTo(left, capY)
+  ctx.lineTo(right, capY)
   ctx.stroke()
   ctx.setLineDash([])
+
+  const rim = plotW * 0.3
+  const breach = series.find((p) => p.spent > state.cap)
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(0, 0, width, height)
+  ctx.rect(left + rim, capY - 3, plotW - 2 * rim, 6)
+  if (breach) ctx.rect(x(breach.t), capY - 3, right + 3 - x(breach.t), 6)
+  ctx.clip("evenodd")
+  ctx.lineWidth = 3
+  ctx.lineJoin = "miter"
+  ctx.lineCap = "butt"
+  ctx.strokeStyle = colors.ink2
+  ctx.beginPath()
+  ctx.moveTo(left + rim, capY)
+  ctx.lineTo(left + 1.5, capY)
+  ctx.lineTo(left + 1.5, base)
+  ctx.lineTo(right - 1.5, base)
+  ctx.lineTo(right - 1.5, capY)
+  ctx.lineTo(right - rim, capY)
+  ctx.stroke()
+  ctx.restore()
+
   ctx.fillStyle = colors.muted
   ctx.textAlign = "left"
   ctx.textBaseline = "bottom"
-  ctx.fillText("cap", PAD.left + 6, capY - 3)
+  ctx.fillText(`cap $${(state.cap / 1e6).toFixed(2)}`, left + 2, capY - 6)
 
   ctx.lineWidth = 2
   ctx.lineJoin = "round"
   ctx.lineCap = "round"
-  if (kind === "reserve") {
-    ctx.strokeStyle = colors.reserved
-    ctx.stroke(stepPath(reserved))
-  }
-  ctx.strokeStyle = colors.spent
+  ctx.save()
+  belowCap()
+  ctx.strokeStyle = colors.ink
   ctx.stroke(spentLine)
+  ctx.restore()
+  ctx.save()
+  aboveCap()
+  ctx.strokeStyle = colors.over
+  ctx.stroke(spentLine)
+  ctx.restore()
 
-  const dot = (t: number, micros: number, fill: string) => {
+  const dot = (t: number, micros: number, fill: string, radius = 4) => {
     ctx.beginPath()
-    ctx.arc(x(t), y(micros), 4, 0, Math.PI * 2)
+    ctx.arc(x(t), y(micros), radius, 0, Math.PI * 2)
     ctx.fillStyle = fill
     ctx.fill()
     ctx.lineWidth = 2
@@ -177,18 +227,18 @@ export function drawChart(
   }
 
   const last = series[series.length - 1]!
-  dot(endT, last.spent, colors.spent)
+  dot(endT, last.spent, last.spent > state.cap ? colors.over : colors.accent, 5)
 
   if (hoverT !== null) {
     const at = valueAt(series, hoverT)
     ctx.lineWidth = 1
-    ctx.strokeStyle = colors.axis
+    ctx.strokeStyle = colors.muted
     ctx.beginPath()
     ctx.moveTo(crisp(x(hoverT)), PAD.top)
-    ctx.lineTo(crisp(x(hoverT)), PAD.top + plotH)
+    ctx.lineTo(crisp(x(hoverT)), base)
     ctx.stroke()
-    if (kind === "reserve") dot(hoverT, reserved(at), colors.reserved)
-    dot(hoverT, at.spent, colors.spent)
+    if (kind === "reserve") dot(hoverT, reserved(at), colors.held)
+    dot(hoverT, at.spent, at.spent > state.cap ? colors.over : colors.ink)
   }
 }
 

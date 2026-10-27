@@ -1,0 +1,31 @@
+[
+ {
+  "mode": "redesign",
+  "depth": "full",
+  "scope": "page",
+  "shape": "Workbench",
+  "theme": "brand: Unprice",
+  "axes": "dark/grotesk-sans/chromatic-amber",
+  "hero": "Counter",
+  "nav": "edge-aligned, wordmark and one link",
+  "footer": "colophon",
+  "imagery": "the product itself, live",
+  "photos": 0,
+  "entry": "none",
+  "fingerprint": "dark ledger paper, rails and seams, two receipt panels, cradle charts",
+  "sections": [
+   "hero+race",
+   "code split",
+   "colophon"
+  ],
+  "signature": "cradle chart: spend held in the Unprice bracket or breaking out of its rim",
+  "waived": [
+   "38iii",
+   "78",
+   "44c",
+   "77"
+  ],
+  "prompt": "live demo comparing a check-after cap with Unprice reserve-before budgets",
+  "date": "2026-10-27"
+ }
+]

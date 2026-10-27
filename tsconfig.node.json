@@ -5,5 +5,5 @@
     "types": ["node"],
     "outDir": "node_modules/.tsbuild/node"
   },
-  "include": ["vite.config.ts", "test", "scripts", "src/shared", "src/worker/api.ts", "src/worker/ledger.ts"]
+  "include": ["vite.config.ts", "vitest.config.ts", "test", "scripts", "src/shared", "src/worker/api.ts", "src/worker/ledger.ts"]
 }

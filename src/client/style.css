@@ -6,6 +6,7 @@
 /* Hallmark · waive 78 · the only h2 under 40px are the two panel titles inside the race · Typical cap and Unprice label the live race, which carries no section head of its own */
 /* Hallmark · waive 44c · Counter posture, the head and the run settings over the race on all twelve columns · the race is the Unprice demo itself and has to sit under the head so both charts share one width */
 /* Hallmark · waive 77 · the code section holds the kept five-line snippet and its one action · a redesign adds no content, and the snippet is the close the demo already had */
+/* Hallmark · dismissed F20 · the docs link sits on its own line under the two buttons on purpose, a text link beside quiet buttons */
 /* Hallmark · dismissed 77 · three sections is the demo as it stood: the race, the snippet, the colophon; nothing was added */
 /* Hallmark · dropped https://app.unprice.dev, https://app.unprice.dev/ · the owner asked for the budgets onboarding URL, which replaces both */
 /* Hallmark · reworded "A cap that reserves before the call cannot be overrun." to "Same agents, same budget. One cap holds." · 58 names a ten-word head */
@@ -626,6 +627,10 @@ canvas {
   gap: var(--space-md) var(--space-lg);
 }
 
+.code-actions .text-link {
+  flex-basis: 100%;
+}
+
 .text-link {
   font-size: var(--text-sm);
   color: var(--color-ink-2);
@@ -745,6 +750,10 @@ pre:focus-visible {
 }
 
 @media (max-width: 40rem) {
+  .nav-link--wide {
+    display: none;
+  }
+
   .controls {
     gap: var(--space-sm) var(--space-md);
   }
